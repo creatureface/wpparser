@@ -16,4 +16,4 @@ __author__ = "Martin Sandström"
 __license__ = "MIT"
 __copyright__ = "Copyright 2014-2020 Martin Sandström"
 
-from .parser import parse  # NOQA
+from .parser import parse as parse

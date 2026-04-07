@@ -1,4 +1,5 @@
 *.pyc
+__pycache__/
 .DS_Store
 .*.swp
 tags
@@ -9,3 +10,5 @@ build
 *.egg-info/
 venv*
 .tox/
+.pytest_cache/
+.ruff_cache/

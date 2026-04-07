@@ -4,11 +4,16 @@ wpparser
 
 Load and parse the wp export file into a readable dictionary.
 """
+
+from __future__ import annotations
+
 import logging
 import xml.etree.ElementTree as ET
-from io import BytesIO as StringIO
-from pathlib import Path
-from typing import Dict, List, Optional, Union
+from io import BytesIO
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import phpserialize
 
@@ -20,7 +25,7 @@ DC_NAMESPACE = "http://purl.org/dc/elements/1.1/"
 WP_NAMESPACE = "http://wordpress.org/export/1.2/"
 
 
-def parse(path: Union[str, Path]) -> dict:
+def parse(path: str | Path) -> dict[str, Any]:
     """
     Parses xml and returns a formatted dict.
 
@@ -94,6 +99,8 @@ def parse(path: Union[str, Path]) -> dict:
             "pub_date": "Mon, 22 Sep 2014 20:10:40 +0000",
             "categories": ["category"],
             "is_sticky": "0",
+            "post_modified": "2014-09-22 21:10:40",
+            "post_modified_gmt": "2014-09-22 20:10:40",
             "post_name": "slug"
         }]
         }
@@ -102,6 +109,8 @@ def parse(path: Union[str, Path]) -> dict:
     doc = ET.parse(path).getroot()
 
     channel = doc.find("./channel")
+    if channel is None:
+        raise ValueError("Invalid WordPress export: missing <channel> element")
 
     blog = _parse_blog(channel)
     authors = _parse_authors(channel)
@@ -118,18 +127,23 @@ def parse(path: Union[str, Path]) -> dict:
     }
 
 
-def _get_wp_element(element: ET.Element, name: str) -> str:
-    return element.find(f"./{{{WP_NAMESPACE}}}{name}").text
+def _find_text(element: ET.Element, path: str) -> str | None:
+    el = element.find(path)
+    return el.text if el is not None else None
 
 
-def _parse_blog(element: ET.Element) -> Dict[str, str]:
+def _get_wp_element(element: ET.Element, name: str) -> str | None:
+    return _find_text(element, f"./{{{WP_NAMESPACE}}}{name}")
+
+
+def _parse_blog(element: ET.Element) -> dict[str, str | None]:
     """
     Parse and return general blog data (title, tagline etc).
     """
 
-    title = element.find("./title").text
-    tagline = element.find("./description").text
-    language = element.find("./language").text
+    title = _find_text(element, "./title")
+    tagline = _find_text(element, "./description")
+    language = _find_text(element, "./language")
     site_url = _get_wp_element(element, "base_site_url")
     blog_url = _get_wp_element(element, "base_blog_url")
 
@@ -142,7 +156,7 @@ def _parse_blog(element: ET.Element) -> Dict[str, str]:
     }
 
 
-def _parse_authors(element: ET.Element) -> List[Dict[str, str]]:
+def _parse_authors(element: ET.Element) -> list[dict[str, str | None]]:
     """
     Returns a well formatted list of users that can be matched against posts.
     """
@@ -156,22 +170,24 @@ def _parse_authors(element: ET.Element) -> List[Dict[str, str]]:
         last_name = _get_wp_element(item, "author_last_name")
         display_name = _get_wp_element(item, "author_display_name")
 
-        authors.append({
-            "login": login,
-            "email": email,
-            "display_name": display_name,
-            "first_name": first_name,
-            "last_name": last_name
-        })
+        authors.append(
+            {
+                "login": login,
+                "email": email,
+                "display_name": display_name,
+                "first_name": first_name,
+                "last_name": last_name,
+            }
+        )
 
     return authors
 
 
-def _parse_categories(element: ET.Element) -> List[Dict[str, str]]:
+def _parse_categories(element: ET.Element) -> list[dict[str, Any]]:
     """
     Returns a list with categories with relations.
     """
-    reference = {}
+    reference: dict[str, dict[str, Any]] = {}
 
     for item in element.findall(f"./{{{WP_NAMESPACE}}}category"):
         term_id = _get_wp_element(item, "term_id")
@@ -179,22 +195,19 @@ def _parse_categories(element: ET.Element) -> List[Dict[str, str]]:
         name = _get_wp_element(item, "cat_name")
         parent = _get_wp_element(item, "category_parent")
 
-        category = {
-            "term_id": term_id,
-            "nicename": nicename,
-            "name": name,
-            "parent": parent
-        }
+        category: dict[str, Any] = {"term_id": term_id, "nicename": nicename, "name": name, "parent": parent}
 
-        reference[nicename] = category
+        if nicename is not None:
+            reference[nicename] = category
 
     return _build_category_tree(None, reference=reference)
 
 
-def _build_category_tree(slug: Optional[str],
-                         reference: Optional[Dict[str, Dict[str, str]]] = None,
-                         items: Optional[List[Dict[str, str]]] = None
-                         ) -> List[Dict[str, str]]:
+def _build_category_tree(
+    slug: str | None,
+    reference: dict[str, dict[str, Any]],
+    items: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """
     Builds a recursive tree with category relations as children.
     """
@@ -212,7 +225,7 @@ def _build_category_tree(slug: Optional[str],
     return items
 
 
-def _parse_tags(element: ET.Element) -> List[Dict[str, str]]:
+def _parse_tags(element: ET.Element) -> list[dict[str, str | None]]:
     """
     Retrieves and parses tags into an array/dict.
 
@@ -240,7 +253,7 @@ def _parse_tags(element: ET.Element) -> List[Dict[str, str]]:
     return tags
 
 
-def _parse_posts(element: ET.Element) -> List[Dict[str, str]]:
+def _parse_posts(element: ET.Element) -> list[dict[str, Any]]:
     """
     Returns a list with posts.
     """
@@ -249,14 +262,14 @@ def _parse_posts(element: ET.Element) -> List[Dict[str, str]]:
     items = element.findall("item")
 
     for item in items:
-        title = item.find("./title").text
-        link = item.find("./link").text
-        pub_date = item.find("./pubDate").text
-        creator = item.find(f"./{{{DC_NAMESPACE}}}creator").text
-        guid = item.find("./guid").text
-        description = item.find("./description").text
-        content = item.find(f"./{{{CONTENT_NAMESPACE}}}encoded").text
-        excerpt = item.find(f"./{{{EXCERPT_NAMESPACE}}}encoded").text
+        title = _find_text(item, "./title")
+        link = _find_text(item, "./link")
+        pub_date = _find_text(item, "./pubDate")
+        creator = _find_text(item, f"./{{{DC_NAMESPACE}}}creator")
+        guid = _find_text(item, "./guid")
+        description = _find_text(item, "./description")
+        content = _find_text(item, f"./{{{CONTENT_NAMESPACE}}}encoded")
+        excerpt = _find_text(item, f"./{{{EXCERPT_NAMESPACE}}}encoded")
         post_id = _get_wp_element(item, "post_id")
         post_date = _get_wp_element(item, "post_date")
         post_date_gmt = _get_wp_element(item, "post_date_gmt")
@@ -272,14 +285,16 @@ def _parse_posts(element: ET.Element) -> List[Dict[str, str]]:
         post_password = _get_wp_element(item, "post_password")
         category_items = item.findall("./category")
 
-        category_domains = {}
+        category_domains: dict[str, list[dict[str, str | None]]] = {}
 
         for category_item in category_items:
             if category_item.attrib["domain"] not in category_domains:
                 category_domains[category_item.attrib["domain"]] = []
-            category_domains[category_item.attrib["domain"]].append({'nicename': category_item.attrib["nicename"], 'text': category_item.text})
+            category_domains[category_item.attrib["domain"]].append(
+                {"nicename": category_item.attrib["nicename"], "text": category_item.text}
+            )
 
-        post = {
+        post: dict[str, Any] = {
             "title": title,
             "link": link,
             "pub_date": pub_date,
@@ -305,7 +320,7 @@ def _parse_posts(element: ET.Element) -> List[Dict[str, str]]:
 
         # Include all categories with a prefix inorder to avoid collisions
         for k, v in category_domains.items():
-            post[f'category_{k}'] = v
+            post[f"category_{k}"] = v
 
         post["postmeta"] = _parse_postmeta(item)
         post["comments"] = _parse_comments(item)
@@ -314,27 +329,28 @@ def _parse_posts(element: ET.Element) -> List[Dict[str, str]]:
     return posts
 
 
-def _parse_postmeta(element: ET.Element) -> Dict[str, str]:
+def _parse_postmeta(element: ET.Element) -> dict[str, Any]:
     """
     Retrieve post metadata as a dictionary
     """
 
-    metadata = {}
+    metadata: dict[str, Any] = {}
     fields = element.findall(f"./{{{WP_NAMESPACE}}}postmeta")
 
     for field in fields:
-        key = _get_wp_element(field, 'meta_key')
-        value = _get_wp_element(field, 'meta_value')
+        key = _get_wp_element(field, "meta_key")
+        value = _get_wp_element(field, "meta_value")
 
-        if key == "_wp_attachment_metadata":
-            stream = StringIO(value.encode())
+        if key is None:
+            continue
+
+        if key == "_wp_attachment_metadata" and value is not None:
+            stream = BytesIO(value.encode())
             try:
                 data = phpserialize.load(stream)
                 metadata["attachment_metadata"] = data
             except ValueError as e:
                 logging.warning(e)
-            except Exception as e:
-                raise e
 
         elif key == "_wp_attached_file":
             metadata["attached_file"] = value
@@ -344,7 +360,7 @@ def _parse_postmeta(element: ET.Element) -> Dict[str, str]:
     return metadata
 
 
-def _parse_comments(element: ET.Element) -> List[Dict[str, str]]:
+def _parse_comments(element: ET.Element) -> list[dict[str, str | None]]:
     """
     Returns a list with comments.
     """
@@ -353,18 +369,18 @@ def _parse_comments(element: ET.Element) -> List[Dict[str, str]]:
     items = element.findall(f"./{{{WP_NAMESPACE}}}comment")
 
     for item in items:
-        comment_id = _get_wp_element(item, 'comment_id')
-        author = _get_wp_element(item, 'comment_author')
-        email = _get_wp_element(item, 'comment_author_email')
-        author_url = _get_wp_element(item, 'comment_author_url')
-        author_ip = _get_wp_element(item, 'comment_author_IP')
-        date = _get_wp_element(item, 'comment_date')
-        date_gmt = _get_wp_element(item, 'comment_date_gmt')
-        content = _get_wp_element(item, 'comment_content')
-        approved = _get_wp_element(item, 'comment_approved')
-        comment_type = _get_wp_element(item, 'comment_type')
-        parent = _get_wp_element(item, 'comment_parent')
-        user_id = _get_wp_element(item, 'comment_user_id')
+        comment_id = _get_wp_element(item, "comment_id")
+        author = _get_wp_element(item, "comment_author")
+        email = _get_wp_element(item, "comment_author_email")
+        author_url = _get_wp_element(item, "comment_author_url")
+        author_ip = _get_wp_element(item, "comment_author_IP")
+        date = _get_wp_element(item, "comment_date")
+        date_gmt = _get_wp_element(item, "comment_date_gmt")
+        content = _get_wp_element(item, "comment_content")
+        approved = _get_wp_element(item, "comment_approved")
+        comment_type = _get_wp_element(item, "comment_type")
+        parent = _get_wp_element(item, "comment_parent")
+        user_id = _get_wp_element(item, "comment_user_id")
 
         comment = {
             "id": comment_id,
